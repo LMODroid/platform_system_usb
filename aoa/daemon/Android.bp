@@ -1,0 +1,22 @@
+cc_binary {
+    name: "aoad",
+    srcs: [
+        "main.cpp",
+    ],
+
+    // Standard system includes
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "libutils",
+        "liblog",
+    ],
+
+    // Init script to start the daemon
+    init_rc: ["aoad.rc"],
+
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}
