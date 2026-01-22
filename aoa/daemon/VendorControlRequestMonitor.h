@@ -33,10 +33,6 @@
 #include <vector>
 #include <map>
 
-#ifndef HID_ANY_ID
-#define HID_ANY_ID (~0)
-#endif
-
 
 using android::hardware::usb::aoa::AccessoryHandshakeState;
 
@@ -55,12 +51,25 @@ namespace android {
         int getMaxPacketSize();
         void setMaxPacketSize(int maxPacketSize);
         bool isStartRequested();
+        bool isRunning() const {
+            return mThread.joinable();
+        }
 
     private:
+        static constexpr int ACCESSORY_GET_PROTOCOL = 51;
+        static constexpr int ACCESSORY_SEND_STRING = 52;
+        static constexpr int ACCESSORY_START = 53;
+        static constexpr int ACCESSORY_REGISTER_HID = 54;
+        static constexpr int EPOLL_MAX_EVENTS = 4;
+        static constexpr int FFS_NUM_EVENTS = 5;
+
         // Constants for accessory mode.
+        static constexpr int ACCESSORY_VERSION = 2;
+        static constexpr int ACCESSORY_STRING_LENGTH = 256;
         static constexpr int ACCESSORY_NUM_STRINGS = 6;
 
         android::base::unique_fd mMonitorFd;
+        int mShutdownPipefd[2];
         std::thread mThread;
 
         UsbAoaService* mService;
@@ -72,6 +81,23 @@ namespace android {
             int maxPacketSize;
             bool startRequested;
         } mAccessoryFields;
+
+        bool readBuffer(int fd, std::vector<char> &buf, uint16_t length);
+
+        // Protocol Handlers
+        bool handleAccessoryGetProtocol(uint16_t value, uint16_t index, uint16_t length,
+                                        std::vector<char> &buf);
+        bool handleAccessorySendString(int fd, uint16_t index, uint16_t length,
+                                       std::vector<char> &buf);
+        bool handleAccessoryStart(int fd, uint16_t value, uint16_t index, uint16_t length,
+                                  std::vector<char> &buf);
+
+        void handleControlRequest(int fd, const struct usb_ctrlrequest *setup);
+        void updateAccessoryState(AccessoryHandshakeState);
+        void teardown();
+        int setupEpoll(android::base::unique_fd &epollFd);
+        void monitorLoop();
+        void stop();
 
         DISALLOW_COPY_AND_ASSIGN(VendorControlRequestMonitor);
     };
