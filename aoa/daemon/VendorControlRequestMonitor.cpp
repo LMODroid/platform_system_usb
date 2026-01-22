@@ -172,6 +172,14 @@ namespace android {
             mAccessoryFields.strings[i] = "";
         }
         mAccessoryFields.maxPacketSize = -1;
+        // Teardown for HID Devices
+        while (!mHidList.empty()) {
+            unregisterHid(mHidList.back());
+            mHidList.pop_back();
+        }
+        if (mService) {
+            mService->notifyStateChange(AccessoryHandshakeState::UNKNOWN);
+        }
     }
 
     void VendorControlRequestMonitor::handleControlRequest(int fd,
@@ -210,6 +218,35 @@ namespace android {
                     }
                     accessoryControlState = AccessoryHandshakeState::START;
                     break;
+                }
+                case ACCESSORY_REGISTER_HID: {
+                    if (!handleRegisterHid(value, index) || (type & USB_DIR_IN)) {
+                        goto fail;
+                    }
+                    break;
+                }
+                case ACCESSORY_UNREGISTER_HID: {
+                    if (!handleUnregisterHid(value) || (type & USB_DIR_IN)) {
+                        goto fail;
+                    }
+                    break;
+                }
+                case ACCESSORY_SET_HID_REPORT_DESC: {
+                    if (!handleSetReportHidDescriptor(fd, value, index, length, buf) ||
+                        (type & USB_DIR_IN)) {
+                        goto fail;
+                    }
+                    break;
+                }
+                case ACCESSORY_SEND_HID_EVENT: {
+                    if (!handleSendHidEvent(fd, value, length, buf) || (type & USB_DIR_IN)) {
+                        goto fail;
+                    }
+                    break;
+                }
+                case ACCESSORY_SET_AUDIO_MODE: {
+                    LOG(WARNING) << "ACCESSORY_SET_AUDIO_MODE is deprecated and not supported.";
+                    break; // Some devices send this. To be ignored as this is not supported.
                 }
                 default:
                     LOG(ERROR) << "Unrecognized USB vendor request! " << (int)code;
@@ -262,12 +299,103 @@ namespace android {
         }
     }
 
+    android::base::unique_fd VendorControlRequestMonitor::getUhidFd() {
+        return android::base::unique_fd(::open(UHID_PATH, O_RDWR | O_CLOEXEC));
+    }
+
+    bool VendorControlRequestMonitor::writeUhidEvent(int fd, struct uhid_event &ev) {
+        ssize_t ret = TEMP_FAILURE_RETRY(::write(fd, &ev, sizeof(ev)));
+        if (ret != sizeof(ev)) {
+            PLOG(ERROR) << "Failed to send event type: " << ev.type;
+            return false;
+        }
+        return true;
+    }
 
     bool VendorControlRequestMonitor::readBuffer(int fd, std::vector<char> &buf, uint16_t length) {
         ssize_t bytesRead = TEMP_FAILURE_RETRY(::read(fd, buf.data(), length));
         if (bytesRead != static_cast<ssize_t>(length)) {
             PLOG(ERROR) << "Could not read buffer (expected " << length << ", got "
                         << bytesRead << ")";
+            return false;
+        }
+        return true;
+    }
+
+    void VendorControlRequestMonitor::unregisterHid(int hidId) {
+        auto it = mHidDeviceFds.find(hidId);
+        if (it != mHidDeviceFds.end() && it->second.ok()) {
+            int fd = it->second;
+            uhid_event ev = {};
+            ev.type = UHID_DESTROY;
+            // As per the uhid kernel doc, we can send UHID_DESTROY to unregister the device.
+            // If the write fails for any reason we will log it.
+            // Also, we are calling the reset() which close() the fd, the device is automatically
+            // unregistered and destroyed internally
+            // https://docs.kernel.org/hid/uhid.html
+            writeUhidEvent(fd, ev);
+            it->second.reset();
+        }
+        mHidDeviceFds.erase(hidId);
+        mPendingDescriptors.erase(hidId);
+    }
+
+    bool VendorControlRequestMonitor::isHidIdRegistered(uint16_t hidId) {
+        return std::find(mHidList.begin(), mHidList.end(), hidId) != mHidList.end();
+    }
+
+    bool VendorControlRequestMonitor::validateDescriptorParams(uint16_t hidId, uint16_t index,
+                                                               uint16_t length) {
+        auto descIt = mPendingDescriptors.find(hidId);
+        if (descIt == mPendingDescriptors.end()) {
+            LOG(ERROR) << "No pending descriptor found for HID ID: " << hidId;
+            return false;
+        }
+        if (index != descIt->second.descBuf.size()) {
+            LOG(ERROR) << "Mismatch in descriptor buffer index for HID ID " << hidId
+                       << ": Expected " << descIt->second.descBuf.size()
+                       << ", got " << index;
+            return false;
+        }
+        if (index + length > descIt->second.descLength) {
+            LOG(ERROR) << "Descriptor chunk for HID ID extends beyond total expected length";
+            return false;
+        }
+        return true;
+    }
+
+    bool VendorControlRequestMonitor::registerUhidDevice(uint16_t hidId,
+                                                         const hid_descriptor &completeDescriptor) {
+        // Try to open a uhid fd
+        android::base::unique_fd uhid_fd = getUhidFd();
+        if (!uhid_fd.ok()) {
+            PLOG(ERROR) << "Failed to open /dev/uhid";
+            return false;
+        }
+        mHidDeviceFds[hidId] = std::move(uhid_fd);
+        // Initialise a Uhid Create Event
+        uhid_event ev = {};
+        ev.type = UHID_CREATE2;
+        strlcpy(reinterpret_cast<char *>(ev.u.create2.name), "hidDev",
+                sizeof(ev.u.create2.name) - 1);
+        strlcpy(reinterpret_cast<char *>(ev.u.create2.uniq), std::to_string(hidId).c_str(),
+                sizeof(ev.u.create2.uniq) - 1); // Use HID ID as unique string
+        memcpy(ev.u.create2.rd_data, completeDescriptor.descBuf.data(),
+               completeDescriptor.descLength);
+        ev.u.create2.rd_size = completeDescriptor.descLength;
+        ev.u.create2.bus = BUS_USB;
+        ev.u.create2.vendor = HID_ANY_ID;
+        ev.u.create2.product = HID_ANY_ID;
+        ev.u.create2.version = 0;
+        ev.u.create2.country = 0;
+        // Send event to create a uhid device
+        if (!writeUhidEvent(mHidDeviceFds[hidId], ev)) {
+            return false;
+        }
+        // Wait for the uhid fd to actually be started.
+        ssize_t ret = TEMP_FAILURE_RETRY(::read(mHidDeviceFds[hidId], &ev, sizeof(ev)));
+        if (ret < 0 || ev.type != UHID_START) {
+            PLOG(ERROR) << "uhid node failed to start:";
             return false;
         }
         return true;
@@ -335,6 +463,110 @@ namespace android {
                          << bytesRead;
         }
         return true;
+    }
+
+    bool VendorControlRequestMonitor::handleRegisterHid(uint16_t hidId, uint16_t index) {
+        if (index == 0) {
+            LOG(ERROR) << "Descriptor length must be > 0.";
+            return false;
+        }
+        if (isHidIdRegistered(hidId)) {
+            unregisterHid(hidId);
+        }
+        mHidList.push_back(hidId);
+        hid_descriptor emptyDescriptor = {{}, index};
+        mPendingDescriptors[hidId] = std::move(emptyDescriptor);
+        return true;
+    }
+
+    bool VendorControlRequestMonitor::handleUnregisterHid(uint16_t hidId) {
+        auto it = std::find(mHidList.begin(), mHidList.end(), hidId);
+        if (it != mHidList.end()) {
+            unregisterHid(hidId);
+            mHidList.erase(it);
+        } else {
+            LOG(WARNING) << "handleUnregisterHid: hidId=%u not found in mHidList" << hidId;
+        }
+        return true;
+    }
+
+    bool VendorControlRequestMonitor::handleSetReportHidDescriptor(int fd, uint16_t hidId,
+                                                                   uint16_t index, uint16_t length,
+                                                                   std::vector<char> &buf) {
+        if (!isHidIdRegistered(hidId)) {
+            LOG(ERROR) << "Hid ID %u not registered." << hidId;
+            return false;
+        }
+
+        if (!validateDescriptorParams(hidId, index, length)) {
+            return false;
+        }
+
+        if (length > UHID_DATA_MAX) {
+            LOG(ERROR) << "Descriptor length [" << length << "] > max len [" << UHID_DATA_MAX
+                       << "] for UHID_CREATE2.";
+            return false;
+        }
+
+        if (!readBuffer(fd, buf, length)) {
+            return false;
+        }
+
+        if (buf.size() == length + 1 && buf.back() == '\0') {
+            buf.pop_back();
+        }
+
+        auto descIt = mPendingDescriptors.find(hidId);
+        if (descIt == mPendingDescriptors.end()) {
+            LOG(ERROR) << "No pending descriptor found for HID ID " << hidId;
+            return false;
+        }
+        descIt->second.descBuf.insert(descIt->second.descBuf.end(), buf.begin(), buf.end());
+
+        // Wait for complete descriptor before registering
+        if (descIt->second.descBuf.size() != descIt->second.descLength) {
+            return true;
+        }
+
+        if (!registerUhidDevice(hidId, descIt->second)) {
+            mPendingDescriptors.erase(hidId);
+            mHidDeviceFds.erase(hidId);
+            return false;
+        }
+        mPendingDescriptors.erase(hidId);
+
+        return true;
+    }
+
+    bool VendorControlRequestMonitor::handleSendHidEvent(int fd, uint16_t hidId, uint16_t length,
+                                                         std::vector<char> &buf) {
+        if (!isHidIdRegistered(hidId)) {
+            LOG(ERROR) << "Hid ID not registered: " << hidId;
+            return false;
+        }
+
+        auto it = mHidDeviceFds.find(hidId);
+        if (it == mHidDeviceFds.end()) {
+            LOG(ERROR) << "Cannot send HID event, UHID fd not found for ID: " << hidId;
+            return false;
+        }
+
+        if (length > UHID_DATA_MAX) {
+            LOG(ERROR) << "event length [" << length <<"] > max length [" << UHID_DATA_MAX
+                       << "] for UHID_INPUT2.";
+            return false;
+        }
+
+        if (!readBuffer(fd, buf, length)) {
+            return false;
+        }
+
+        struct uhid_event ev = {};
+        ev.type = UHID_INPUT2;
+        ev.u.input2.size = length;
+        memcpy(&ev.u.input2.data, buf.data(), length * sizeof(ev.u.input2.data[0]));
+
+        return writeUhidEvent(it->second, ev);
     }
 
 } // namespace android

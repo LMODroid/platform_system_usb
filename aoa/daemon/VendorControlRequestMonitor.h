@@ -33,6 +33,10 @@
 #include <vector>
 #include <map>
 
+#ifndef HID_ANY_ID
+#define HID_ANY_ID (~0)
+#endif
+
 
 using android::hardware::usb::aoa::AccessoryHandshakeState;
 
@@ -60,6 +64,10 @@ namespace android {
         static constexpr int ACCESSORY_SEND_STRING = 52;
         static constexpr int ACCESSORY_START = 53;
         static constexpr int ACCESSORY_REGISTER_HID = 54;
+        static constexpr int ACCESSORY_UNREGISTER_HID = 55;
+        static constexpr int ACCESSORY_SET_HID_REPORT_DESC = 56;
+        static constexpr int ACCESSORY_SEND_HID_EVENT = 57;
+        static constexpr int ACCESSORY_SET_AUDIO_MODE = 58;
         static constexpr int EPOLL_MAX_EVENTS = 4;
         static constexpr int FFS_NUM_EVENTS = 5;
 
@@ -67,6 +75,7 @@ namespace android {
         static constexpr int ACCESSORY_VERSION = 2;
         static constexpr int ACCESSORY_STRING_LENGTH = 256;
         static constexpr int ACCESSORY_NUM_STRINGS = 6;
+        static constexpr char UHID_PATH[] = "/dev/uhid";
 
         android::base::unique_fd mMonitorFd;
         int mShutdownPipefd[2];
@@ -82,6 +91,22 @@ namespace android {
             bool startRequested;
         } mAccessoryFields;
 
+        // Variables for HID
+        struct hid_descriptor {
+            std::vector<char> descBuf;
+            uint16_t descLength;
+        };
+        std::map<uint16_t, android::base::unique_fd> mHidDeviceFds;
+        std::map<uint16_t, hid_descriptor> mPendingDescriptors;
+        std::vector<uint16_t> mHidList;
+
+        android::base::unique_fd getUhidFd();
+        bool writeUhidEvent(int fd, struct uhid_event &ev);
+        void unregisterHid(int hidId);
+        bool isHidIdRegistered(uint16_t hidId);
+        bool validateDescriptorParams(uint16_t hidId, uint16_t index, uint16_t length);
+        bool registerUhidDevice(uint16_t hidId, const hid_descriptor &completeDescriptor);
+
         bool readBuffer(int fd, std::vector<char> &buf, uint16_t length);
 
         // Protocol Handlers
@@ -91,6 +116,13 @@ namespace android {
                                        std::vector<char> &buf);
         bool handleAccessoryStart(int fd, uint16_t value, uint16_t index, uint16_t length,
                                   std::vector<char> &buf);
+
+        // HID Protocol Handlers
+        bool handleRegisterHid(uint16_t hidId, uint16_t index);
+        bool handleUnregisterHid(uint16_t hidId);
+        bool handleSetReportHidDescriptor(int fd, uint16_t hidId, uint16_t index, uint16_t length,
+                                          std::vector<char> &buf);
+        bool handleSendHidEvent(int fd, uint16_t hidId, uint16_t length, std::vector<char> &buf);
 
         void handleControlRequest(int fd, const struct usb_ctrlrequest *setup);
         void updateAccessoryState(AccessoryHandshakeState);
