@@ -2,14 +2,21 @@ cc_binary {
     name: "aoad",
     srcs: [
         "main.cpp",
+        "UsbAoaService.cpp",
+        "VendorControlRequestMonitor.cpp",
+        "AccessoryLegacyBridgeThread.cpp",
     ],
 
     // Standard system includes
     shared_libs: [
         "libbase",
         "libbinder",
-        "libutils",
         "liblog",
+        "libutils",
+        "libselinux",
+        "libstatslog",
+        "libasyncio",
+        "android.hardware.usb.aoa-cpp",
     ],
 
     // Init script to start the daemon

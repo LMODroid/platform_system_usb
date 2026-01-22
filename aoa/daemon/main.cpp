@@ -21,23 +21,41 @@
 #include <binder/IPCThreadState.h>
 #include <binder/ProcessState.h>
 #include <binder/IServiceManager.h>
+#include "VendorControlRequestMonitor.h"
+#include "UsbAoaService.h"
 
 using android::sp;
 using android::ProcessState;
 using android::IPCThreadState;
 using android::defaultServiceManager;
 using android::String16;
+using android::VendorControlRequestMonitor;
+using android::UsbAoaService;
 
 int main(int /*argc*/, char** argv) {
     android::base::InitLogging(argv, android::base::LogdLogger(android::base::SYSTEM));
 
-    LOG(INFO) << "aoad starting up...";
+    LOG(INFO) << "aoa daemon starting up...";
 
     sp<ProcessState> ps(ProcessState::self());
-    ps->setThreadPoolMaxThreadCount(0);
     ps->startThreadPool();
 
+    auto monitor = std::make_unique<VendorControlRequestMonitor>();
+    sp<UsbAoaService> service = new UsbAoaService(std::move(monitor));
+
+    android::status_t status = defaultServiceManager()->addService(
+            String16("aoad"), service);
+
+    if (status != android::OK) {
+        LOG(INFO) << "Failed to register aoad service: " << status;
+        return -1;
+    }
+
+    LOG(INFO) << "aoad service registered. Waiting for commands...";
+
     IPCThreadState::self()->joinThreadPool();
+
+    LOG(FATAL) << "aoad exiting unexpectedly";
 
     return 0;
 }
