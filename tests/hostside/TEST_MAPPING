@@ -1,0 +1,12 @@
+{
+  "presubmit": [
+    {
+      "name": "UsbHostsideTests"
+    }
+  ],
+  "postsubmit": [
+    {
+      "name": "UsbHostsideTests"
+    }
+  ]
+}
