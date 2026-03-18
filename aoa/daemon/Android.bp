@@ -1,10 +1,34 @@
+cc_library_static {
+    name: "libaoad_core",
+    srcs: [
+        "UsbAoaService.cpp",
+        "VendorControlRequestMonitor.cpp",
+        "AccessoryLegacyBridgeThread.cpp",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "liblog",
+        "libutils",
+        "libselinux",
+        "libstatslog",
+        "libasyncio",
+        "android.hardware.usb.aoa-cpp",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}
+
 cc_binary {
     name: "aoad",
     srcs: [
         "main.cpp",
-        "UsbAoaService.cpp",
-        "VendorControlRequestMonitor.cpp",
-        "AccessoryLegacyBridgeThread.cpp",
+    ],
+
+    static_libs: [
+        "libaoad_core",
     ],
 
     // Standard system includes
@@ -26,4 +50,37 @@ cc_binary {
         "-Wall",
         "-Werror",
     ],
+}
+
+cc_fuzz {
+    name: "aoad_fuzzer",
+    defaults: [
+        "service_fuzzer_defaults",
+    ],
+    srcs: [
+        "aoad_fuzzer.cpp",
+    ],
+    static_libs: [
+        "libaoad_core",
+    ],
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "liblog",
+        "libutils",
+        "libselinux",
+        "libstatslog",
+        "libasyncio",
+        "android.hardware.usb.aoa-cpp",
+    ],
+    fuzz_config: {
+        description: "Fuzzer for the USB AOA (Android Open Accessory) daemon",
+        fuzzed_code_usage: "future_version",
+        service_privilege: "privileged",
+        vector: "local_privileges_required",
+        users: "multi_user",
+        cc: ["android-usb@google.com"],
+        componentid: 1407286,
+    },
+    team: "trendy_team_android_usb",
 }
