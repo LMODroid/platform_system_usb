@@ -1,0 +1,9 @@
+service aoad /system/bin/aoad
+    class late_start
+    user system
+    group system usb uhid
+    disabled
+    seclabel u:r:aoad:s0
+
+on property:ro.usb.userspace.aoa.enabled=true
+    start aoad
