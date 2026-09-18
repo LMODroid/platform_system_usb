@@ -1,7 +1,7 @@
 service aoad /system/bin/aoad
     class late_start
-    user system
-    group system usb uhid
+    user aoad
+    group aoad usb uhid
     disabled
     seclabel u:r:aoad:s0
 
